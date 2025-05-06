@@ -1,0 +1,28 @@
+name: scvi-tools-env
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - cpuonly
+  - python=3.11.12
+  - pytorch=2.6.0
+  - pip:
+    - anndata
+    - h5py
+    - jupyter
+    - jupyterlab
+    - matplotlib
+    - muon==0.1.7
+    - numpy==2.2.5
+    - pandas
+    - pip==25.1.1
+    - scanpy==1.11.1
+    - scikit-learn==1.5.2
+    - scikit-misc==0.5.1
+    - scipy==1.15.2
+    - scvi-tools==1.3.0
+    - seaborn==0.13.2
+    - statsmodels==0.14.4
+    - sympy==1.14.0
+    - umap-learn==0.5.7
