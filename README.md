@@ -1,4 +1,4 @@
-# TOTALMRVI Project
+# TotalMrVI: Multi-Resolution Variational Inference for CITE-Seq Data
 
 This project contains the PyTorch module `TOTALMRVAE` for modeling CITE-seq data,
 inspired by MrVI and TOTALVI.
