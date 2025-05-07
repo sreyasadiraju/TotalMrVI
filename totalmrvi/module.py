@@ -323,12 +323,12 @@ class TOTALMRVAE(BaseModuleClass):
         sample_idx_orig = tensors[REGISTRY_KEYS.SAMPLE_KEY]
         if sample_idx_orig.ndim == 2 and sample_idx_orig.shape[-1] == 1:
             sample_idx_orig = sample_idx_orig.squeeze(-1)
-        sample_idx_orig = sample_idx_orig.long() # <--- CAST TO LONG HERE
+        sample_idx_orig = sample_idx_orig.long() 
 
         batch_idx_orig = tensors[REGISTRY_KEYS.BATCH_KEY]
         if batch_idx_orig.ndim == 2 and batch_idx_orig.shape[-1] == 1:
             batch_idx_orig = batch_idx_orig.squeeze(-1)
-        batch_idx_orig = batch_idx_orig.long() # <--- CAST TO LONG HERE (good practice)
+        batch_idx_orig = batch_idx_orig.long() 
 
         assert sample_idx_orig.ndim == 1, f"sample_idx_orig in loss should be 1D, got {sample_idx_orig.shape}"
         assert batch_idx_orig.ndim == 1, f"batch_idx_orig in loss should be 1D, got {batch_idx_orig.shape}"
