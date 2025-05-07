@@ -7,6 +7,7 @@ dependencies:
   - cpuonly
   - python=3.11.12
   - pytorch=2.6.0
+  - pytest
   - pip:
     - anndata
     - h5py
