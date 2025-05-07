@@ -221,10 +221,20 @@ class TOTALMRVAE(BaseModuleClass):
     def _get_inference_input(self, tensors: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x = tensors[REGISTRY_KEYS.X_KEY]
         y = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
-        sample_index = tensors[REGISTRY_KEYS.SAMPLE_KEY].squeeze(-1) if tensors[REGISTRY_KEYS.SAMPLE_KEY].ndim == 2 and tensors[REGISTRY_KEYS.SAMPLE_KEY].shape[-1] == 1 else tensors[REGISTRY_KEYS.SAMPLE_KEY]
-        batch_index = tensors[REGISTRY_KEYS.BATCH_KEY].squeeze(-1) if tensors[REGISTRY_KEYS.BATCH_KEY].ndim == 2 and tensors[REGISTRY_KEYS.BATCH_KEY].shape[-1] == 1 else tensors[REGISTRY_KEYS.BATCH_KEY]
-        assert sample_index.ndim == 1
-        assert batch_index.ndim == 1
+        
+        sample_index = tensors[REGISTRY_KEYS.SAMPLE_KEY]
+        if sample_index.ndim == 2 and sample_index.shape[-1] == 1:
+            sample_index = sample_index.squeeze(-1)
+        sample_index = sample_index.long() 
+
+        batch_index = tensors[REGISTRY_KEYS.BATCH_KEY]
+        if batch_index.ndim == 2 and batch_index.shape[-1] == 1:
+            batch_index = batch_index.squeeze(-1)
+        batch_index = batch_index.long()
+
+        assert sample_index.ndim == 1, f"sample_index after processing should be 1D, got {sample_index.ndim}"
+        assert batch_index.ndim == 1, f"batch_index after processing should be 1D, got {batch_index.ndim}"
+        
         return {"x": x, "y": y, "sample_index": sample_index, "batch_index": batch_index}
 
     @auto_move_data
@@ -267,8 +277,14 @@ class TOTALMRVAE(BaseModuleClass):
     def _get_generative_input(
         self, tensors: dict[str, torch.Tensor], inference_outputs: dict[str, torch.Tensor],
     ) -> dict[str, torch.Tensor]:
-        batch_index_orig = tensors[REGISTRY_KEYS.BATCH_KEY].squeeze(-1) if tensors[REGISTRY_KEYS.BATCH_KEY].ndim == 2 and tensors[REGISTRY_KEYS.BATCH_KEY].shape[-1] == 1 else tensors[REGISTRY_KEYS.BATCH_KEY]
-        assert batch_index_orig.ndim == 1
+        batch_index_orig = tensors[REGISTRY_KEYS.BATCH_KEY]
+        if batch_index_orig.ndim == 2 and batch_index_orig.shape[-1] == 1:
+            batch_index_orig = batch_index_orig.squeeze(-1)
+        
+        batch_index_orig = batch_index_orig.long() # <--- ADD THIS CAST
+
+        assert batch_index_orig.ndim == 1, f"batch_index_orig for generative should be 1D, got {batch_index_orig.shape}"
+        
         return {
             "z": inference_outputs["z"], "library": inference_outputs["library"],
             "batch_index": batch_index_orig, "logbeta": inference_outputs["logbeta"],
