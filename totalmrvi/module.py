@@ -319,14 +319,19 @@ class TOTALMRVAE(BaseModuleClass):
     ) -> LossOutput:
         x_orig = tensors[REGISTRY_KEYS.X_KEY]
         y_orig = tensors[REGISTRY_KEYS.PROTEIN_EXP_KEY]
-        sample_idx_orig = (tensors[REGISTRY_KEYS.SAMPLE_KEY].squeeze(-1)
-                           if tensors[REGISTRY_KEYS.SAMPLE_KEY].ndim == 2 and tensors[REGISTRY_KEYS.SAMPLE_KEY].shape[-1] == 1
-                           else tensors[REGISTRY_KEYS.SAMPLE_KEY])
-        batch_idx_orig  = (tensors[REGISTRY_KEYS.BATCH_KEY].squeeze(-1)
-                           if tensors[REGISTRY_KEYS.BATCH_KEY].ndim == 2 and tensors[REGISTRY_KEYS.BATCH_KEY].shape[-1] == 1
-                           else tensors[REGISTRY_KEYS.BATCH_KEY])
-        assert sample_idx_orig.ndim == 1
-        assert batch_idx_orig.ndim == 1
+        
+        sample_idx_orig = tensors[REGISTRY_KEYS.SAMPLE_KEY]
+        if sample_idx_orig.ndim == 2 and sample_idx_orig.shape[-1] == 1:
+            sample_idx_orig = sample_idx_orig.squeeze(-1)
+        sample_idx_orig = sample_idx_orig.long() # <--- CAST TO LONG HERE
+
+        batch_idx_orig = tensors[REGISTRY_KEYS.BATCH_KEY]
+        if batch_idx_orig.ndim == 2 and batch_idx_orig.shape[-1] == 1:
+            batch_idx_orig = batch_idx_orig.squeeze(-1)
+        batch_idx_orig = batch_idx_orig.long() # <--- CAST TO LONG HERE (good practice)
+
+        assert sample_idx_orig.ndim == 1, f"sample_idx_orig in loss should be 1D, got {sample_idx_orig.shape}"
+        assert batch_idx_orig.ndim == 1, f"batch_idx_orig in loss should be 1D, got {batch_idx_orig.shape}"
 
         z_from_inference = inference_outputs["z"]
         S_dim_active = z_from_inference.shape[0] if z_from_inference.ndim == 3 else -1
