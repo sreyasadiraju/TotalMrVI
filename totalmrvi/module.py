@@ -38,25 +38,35 @@ class TOTALMRVAE(BaseModuleClass):
         Number of unique batch categories for conditioning. If 0, batch effects
         related to one-hot encoding or batch-specific priors are not modeled.
     n_labels
-        Number of cell type labels (currently unused in this module's core logic).
+        Number of cell type labels (currently passed but minimally used by this module's core logic).
     n_latent
         Dimensionality of the main latent variable z.
     n_latent_u
         Dimensionality of the intermediate latent variable u. Defaults to `n_latent`.
     n_hidden
-        General hidden layer size for MLPs and embeddings.
+        General hidden layer size. Used as default for `EncoderXYU(n_hidden=...)`,
+        `BackgroundProteinEncoder(n_hidden=...)`, `DecoderZXAttention(n_hidden=...)`,
+        and `ProteinDecoderZYAttention(n_hidden=...)` if not overridden by more specific
+        parameters or `qu_kwargs`/`qz_kwargs`.
     encoder_n_layers
-        Number of layers for MLPs in EncoderXYU and default for EncoderUZ's internal MLPs.
+        Default number of layers for the MLPs in `EncoderXYU` (for its `loc_layer` and `scale_layer`).
+        Can be overridden if "n_layers" is in `qu_kwargs`.
     decoder_n_hidden_attn_mlp
-        Hidden dimension for MLPs within AttentionBlocks in decoders.
+        Default hidden dimension for MLPs within `AttentionBlock`s used in `EncoderUZ`,
+        `DecoderZXAttention`, and `ProteinDecoderZYAttention`. Can be overridden if "n_hidden"
+        (for `EncoderUZ`) or relevant keys are in `qz_kwargs` or if specific decoder attention
+        params are passed to their respective modules (not currently exposed at `TOTALMRVAE` level for decoders).
     decoder_n_layers_attn_mlp
-        Number of layers for MLPs within AttentionBlocks in decoders.
+        Default number of layers for the post-MLP within `AttentionBlock`s used in `EncoderUZ`,
+        `DecoderZXAttention`, and `ProteinDecoderZYAttention`. Can be overridden if "n_layers"
+        (for `EncoderUZ`) or relevant keys are in `qz_kwargs`.
     decoder_n_heads_attn
-        Number of attention heads for AttentionBlocks in decoders.
+        Default number of attention heads for `AttentionBlock`s in `EncoderUZ` and decoders.
     decoder_dropout_rate_attn
-        Dropout rate for AttentionBlocks and MLPs in decoders.
+        Default dropout rate for `AttentionBlock`s and subsequent MLPs in `EncoderUZ` and decoders.
     n_latent_batch_embed
-        Dimension for batch embeddings used in decoders' attention.
+        Dimension for batch embeddings used in decoders' attention mechanisms (`DecoderZXAttention`,
+        `ProteinDecoderZYAttention`).
     dispersion_pro
         Dispersion parameter type for proteins: "protein" (shared per protein) or
         "protein-cell" (specific to each cell-protein pair).
@@ -70,9 +80,13 @@ class TOTALMRVAE(BaseModuleClass):
         NumPy array for the scale of the Normal prior on log_beta.
         Shape should be (n_input_proteins,) or (n_input_proteins, n_batch).
     qu_kwargs
-        Keyword arguments for `EncoderXYU`.
+        Keyword arguments for :class:`~totalmrvi.encoders.EncoderXYU`. Can include "n_hidden" and
+        "n_layers" to override defaults derived from `n_hidden` and `encoder_n_layers`.
     qz_kwargs
-        Keyword arguments for `EncoderUZ`.
+        Keyword arguments for :class:`~totalmrvi.encoders.EncoderUZ`. Can include "n_hidden",
+        "n_layers", "n_heads", "dropout_rate", "stop_gradients_mlp", etc., to configure
+        its internal `AttentionBlock` and other properties. These will override defaults
+        derived from `decoder_n_hidden_attn_mlp`, `decoder_n_layers_attn_mlp`, etc.
     """
     def __init__(
         self,
@@ -83,13 +97,13 @@ class TOTALMRVAE(BaseModuleClass):
         n_labels: int,
         n_latent: int = 30,
         n_latent_u: int | None = None,
-        n_hidden: int = 128,
-        encoder_n_layers: int = 2,
-        decoder_n_hidden_attn_mlp: int = 32,
-        decoder_n_layers_attn_mlp: int = 1,
-        decoder_n_heads_attn: int = 2,
-        decoder_dropout_rate_attn: float = 0.0,
-        n_latent_batch_embed: int = 16,
+        n_hidden: int = 128, # General hidden size for components unless overridden
+        encoder_n_layers: int = 2, # Default for EncoderXYU's internal MLPs
+        decoder_n_hidden_attn_mlp: int = 32, # Default for AttentionBlock n_hidden_mlp in decoders AND qz
+        decoder_n_layers_attn_mlp: int = 1,  # Default for AttentionBlock n_layers_mlp in decoders AND qz
+        decoder_n_heads_attn: int = 2,       # Default for AttentionBlock n_heads in decoders AND qz
+        decoder_dropout_rate_attn: float = 0.0, # Default for AttentionBlock dropout in decoders AND qz
+        n_latent_batch_embed: int = 16,      # For decoders' batch attention kv_dim
         dispersion_pro: str = "protein",
         dispersion_rna: str = "gene-cell",
         protein_background_prior_mean: np.ndarray | None = None,
@@ -106,53 +120,80 @@ class TOTALMRVAE(BaseModuleClass):
         self.n_labels = n_labels
         self.n_latent = n_latent
         self.n_latent_u_eff = n_latent if n_latent_u is None else n_latent_u
-        self.n_hidden = n_hidden
         self.dispersion_pro = dispersion_pro
         self.dispersion_rna = dispersion_rna
 
-        qu_kwargs_full = DEFAULT_QU_KWARGS.copy()
+        # --- EncoderXYU (qu) setup ---
+        _qu_kwargs_processed = DEFAULT_QU_KWARGS.copy()
         if qu_kwargs is not None:
-            qu_kwargs_full.update(qu_kwargs)
-
+            _qu_kwargs_processed.update(qu_kwargs)
+        _n_hidden_for_qu = _qu_kwargs_processed.pop("n_hidden", n_hidden)
+        _n_layers_for_qu = _qu_kwargs_processed.pop("n_layers", encoder_n_layers)
         self.qu = EncoderXYU(
             n_genes=n_input_genes, n_proteins=n_input_proteins, n_latent=self.n_latent_u_eff,
-            n_hidden=n_hidden, n_sample=n_sample, n_layers=encoder_n_layers, **qu_kwargs_full,
+            n_hidden=_n_hidden_for_qu, n_sample=n_sample, n_layers=_n_layers_for_qu,
+            **_qu_kwargs_processed,
         )
 
-        qz_kwargs_full = DEFAULT_QZ_KWARGS.copy()
+        # --- EncoderUZ (qz) setup ---
+        _qz_kwargs_processed = DEFAULT_QZ_KWARGS.copy()
         if qz_kwargs is not None:
-            qz_kwargs_full.update(qz_kwargs)
+            _qz_kwargs_processed.update(qz_kwargs)
         
-        n_hidden_for_qz = qz_kwargs_full.pop("n_hidden", decoder_n_hidden_attn_mlp)
-        n_layers_for_qz = qz_kwargs_full.pop("n_layers", encoder_n_layers)
+        # Parameters for EncoderUZ, which will then pass them to its internal AttentionBlock:
+        # EncoderUZ's `n_hidden` param becomes AttentionBlock's `n_hidden_mlp`.
+        # EncoderUZ's `n_layers` param becomes AttentionBlock's `n_layers_mlp`.
+        _n_hidden_for_qz_attention_mlp = _qz_kwargs_processed.pop("n_hidden", decoder_n_hidden_attn_mlp)
+        _n_layers_for_qz_attention_mlp = _qz_kwargs_processed.pop("n_layers", decoder_n_layers_attn_mlp)
+        # Other AttentionBlock params come from EncoderUZ defaults or _qz_kwargs_processed
+        _n_heads_for_qz_attn = _qz_kwargs_processed.pop("n_heads", decoder_n_heads_attn)
+        _dropout_rate_for_qz_attn = _qz_kwargs_processed.pop("dropout_rate", decoder_dropout_rate_attn)
+        # stop_gradients_mlp is also an EncoderUZ param passed to AttentionBlock
+        _stop_grads_mlp_for_qz_attn = _qz_kwargs_processed.pop("stop_gradients_mlp", DEFAULT_QZ_KWARGS.get("stop_gradients_mlp", True))
+
 
         self.qz = EncoderUZ(
-            n_latent=n_latent, n_sample=n_sample,
+            n_latent=n_latent,
+            n_sample=n_sample,
             n_latent_u=self.n_latent_u_eff if self.n_latent_u_eff != self.n_latent else None,
-            n_hidden=n_hidden_for_qz, n_layers=n_layers_for_qz, **qz_kwargs_full,
+            # Pass the correct args to EncoderUZ based on its signature
+            n_hidden=_n_hidden_for_qz_attention_mlp, # This will be n_hidden_mlp in its AttentionBlock
+            n_layers=_n_layers_for_qz_attention_mlp,   # This will be n_layers_mlp in its AttentionBlock
+            n_heads=_n_heads_for_qz_attn,
+            dropout_rate=_dropout_rate_for_qz_attn,
+            stop_gradients_mlp=_stop_grads_mlp_for_qz_attn,
+            # Other direct params for EncoderUZ come from _qz_kwargs_processed or its own defaults
+            **_qz_kwargs_processed, 
         )
 
+        # --- BackgroundProteinEncoder setup ---
         self.background_encoder = BackgroundProteinEncoder(
             n_latent=n_latent, n_batch=n_batch, n_proteins=n_input_proteins, n_hidden=n_hidden,
         )
 
+        # --- DecoderZXAttention (px) setup ---
         self.px = DecoderZXAttention(
             n_latent=n_latent, n_output_genes=n_input_genes, n_batch=n_batch,
             n_latent_batch_embed=n_latent_batch_embed, n_hidden=n_hidden,
-            n_layers_attn_mlp=decoder_n_layers_attn_mlp, n_heads_attn=decoder_n_heads_attn,
-            dropout_rate_attn=decoder_dropout_rate_attn, dispersion=self.dispersion_rna,
+            n_layers_attn_mlp=decoder_n_layers_attn_mlp, # For its internal AttentionBlock
+            n_heads_attn=decoder_n_heads_attn,           # For its internal AttentionBlock
+            dropout_rate_attn=decoder_dropout_rate_attn, # For its internal AttentionBlock & MLP
+            dispersion=self.dispersion_rna,
         )
 
+        # --- ProteinDecoderZYAttention (py) setup ---
         self.py = ProteinDecoderZYAttention(
             n_latent=n_latent, n_output_proteins=n_input_proteins, n_batch=n_batch,
             n_latent_batch_embed=n_latent_batch_embed, n_hidden=n_hidden,
-            n_layers_attn_mlp=decoder_n_layers_attn_mlp, n_heads_attn=decoder_n_heads_attn,
-            dropout_rate_attn=decoder_dropout_rate_attn, dispersion=dispersion_pro,
+            n_layers_attn_mlp=decoder_n_layers_attn_mlp, # For its internal AttentionBlock
+            n_heads_attn=decoder_n_heads_attn,           # For its internal AttentionBlock
+            dropout_rate_attn=decoder_dropout_rate_attn, # For its internal AttentionBlock & MLP
+            dispersion=dispersion_pro,
         )
 
+        # --- Priors setup ---
         self.register_buffer("u_prior_means", torch.zeros(n_sample, self.n_latent_u_eff))
         self.register_buffer("u_prior_logscales", torch.zeros(n_sample, self.n_latent_u_eff))
-
         target_shape = (self.n_input_proteins,) if n_batch == 0 else (self.n_input_proteins, n_batch)
         if protein_background_prior_mean is None:
             self.prior_logbeta_loc = nn.Parameter(torch.zeros(*target_shape))
@@ -170,8 +211,10 @@ class TOTALMRVAE(BaseModuleClass):
                 if _prior_scale.ndim == 1: _prior_scale = _prior_scale.unsqueeze(-1)
                 if _prior_mean.shape[1] == 1 and target_shape[1] > 1: _prior_mean = _prior_mean.expand(-1, target_shape[1])
                 if _prior_scale.shape[1] == 1 and target_shape[1] > 1: _prior_scale = _prior_scale.expand(-1, target_shape[1])
-            if _prior_mean.shape != target_shape: raise ValueError(f"Prior mean shape {_prior_mean.shape} != target {target_shape}")
-            if _prior_scale.shape != target_shape: raise ValueError(f"Prior scale shape {_prior_scale.shape} != target {target_shape}")
+            if _prior_mean.shape != target_shape:
+                raise ValueError(f"Prior mean shape {_prior_mean.shape} != target {target_shape}")
+            if _prior_scale.shape != target_shape:
+                raise ValueError(f"Prior scale shape {_prior_scale.shape} != target {target_shape}")
             self.prior_logbeta_loc = nn.Parameter(_prior_mean)
             self.prior_logbeta_logscale = nn.Parameter(torch.log(_prior_scale + 1e-8))
 
