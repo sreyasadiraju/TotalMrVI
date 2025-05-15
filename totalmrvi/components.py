@@ -164,6 +164,8 @@ class AttentionBlock(nn.Module):
         combined dimension for mean and scale (e.g., 2 * latent_dim).
     outerprod_dim
         Dimension for Q, K, V projections in attention.
+    n_channels
+        The number of channels per embedding dimension computed by attention.
     n_heads
         Number of attention heads.
     dropout_rate
@@ -174,9 +176,6 @@ class AttentionBlock(nn.Module):
         Number of layers for post_mlp (pre_mlp is fixed to 1 layer).
     stop_gradients_mlp
         If True, parameters of pre_mlp and post_mlp are frozen (requires_grad=False).
-    use_map
-        If True, outputs a single tensor. If False, `out_dim` is expected to be
-        2*actual_out, and output is (mean, scale_chunk).
     kv_dim
         Dimension of the key-value embedding. Defaults to `query_dim` if None.
     """
@@ -185,104 +184,75 @@ class AttentionBlock(nn.Module):
         query_dim: int,
         out_dim: int,
         outerprod_dim: int = 16,
+        n_channels: int = 4,
         n_heads: int = 2,
         dropout_rate: float = 0.0,
-        n_hidden_mlp: int = 32,
-        n_layers_mlp: int = 1,
+        n_hidden: int = 32,
+        n_layers: int = 1,
         stop_gradients_mlp: bool = False,
-        use_map: bool = True,
         kv_dim: int | None = None
     ):
         super().__init__()
         self.outerprod_dim = outerprod_dim
-        self.use_map = use_map
+        self.n_channels = n_channels
         self.out_dim = out_dim
         self.query_dim = query_dim
         self.kv_dim = kv_dim or query_dim
+        self.stop_gradients_mlp = stop_gradients_mlp
 
         self.query_proj = nn.Linear(self.query_dim, outerprod_dim)
         self.kv_proj = nn.Linear(self.kv_dim, outerprod_dim)
 
         self.attn = nn.MultiheadAttention(
-            embed_dim=outerprod_dim,
+            embed_dim=n_channels * n_heads,
             num_heads=n_heads,
             dropout=dropout_rate,
             batch_first=True,
         )
+        self.attn_output_proj = nn.Linear(n_channels * n_heads, n_channels)
         self.pre_mlp = MLP(
-            in_dim=outerprod_dim,
-            hidden_dim=n_hidden_mlp,
+            in_dim=outerprod_dim * n_channels,
+            hidden_dim=n_hidden,
             out_dim=outerprod_dim,
             n_layers=1,
         )
         self.post_mlp = MLP(
             in_dim=self.query_dim + outerprod_dim,
-            hidden_dim=n_hidden_mlp,
+            hidden_dim=n_hidden,
             out_dim=out_dim,
-            n_layers=n_layers_mlp,
+            n_layers=n_layers,
         )
-        if stop_gradients_mlp:
-            for param in self.pre_mlp.parameters():
-                param.requires_grad = False
-            for param in self.post_mlp.parameters():
-                param.requires_grad = False
 
     def forward(self, query_embed: torch.Tensor, kv_embed: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         S_dim, B_dim = -1, -1
-        original_ndim = query_embed.ndim
 
+        assert query_embed.ndim == kv_embed.ndim, "AttentionBlock: query_embed and kv_embed must have the same number of dimensions"
         if query_embed.ndim == 3:
             S_dim = query_embed.shape[0]
             B_dim = query_embed.shape[1]
-            _query_embed_reshaped = query_embed.reshape(S_dim * B_dim, -1)
+            assert kv_embed.shape[0] == S_dim and kv_embed.shape[1] == B_dim, "AttentionBlock: query_embed and kv_embed must have the same batch and sample sizes"
+            query_embed = query_embed.reshape(S_dim * B_dim, -1)
+            kv_embed = kv_embed.reshape(S_dim * B_dim, -1)
         elif query_embed.ndim == 2:
             B_dim = query_embed.shape[0]
-            _query_embed_reshaped = query_embed
+            assert kv_embed.shape[0] == B_dim, "AttentionBlock: query_embed and kv_embed must have the same batch size"
         else:
             raise ValueError(f"AttentionBlock: query_embed has unexpected ndim: {query_embed.ndim}, shape: {query_embed.shape}")
         
-        assert _query_embed_reshaped.ndim == 2
+        query_embed_stop = query_embed if not self.stop_gradients_mlp else query_embed.detach()
 
-        if kv_embed.ndim == 2:
-            if S_dim != -1 :
-                _kv_embed_expanded = kv_embed.unsqueeze(0).expand(S_dim, B_dim, -1)
-                _kv_embed_reshaped = _kv_embed_expanded.reshape(S_dim * B_dim, -1)
-            else:
-                _kv_embed_reshaped = kv_embed
-        elif kv_embed.ndim == 3 and S_dim != -1 and kv_embed.shape[0] == S_dim and kv_embed.shape[1] == B_dim:
-             _kv_embed_reshaped = kv_embed.reshape(kv_embed.shape[0] * kv_embed.shape[1], -1)
-        else:
-            raise ValueError(f"AttentionBlock: kv_embed shape {kv_embed.shape} incompatible with query shape {query_embed.shape}")
+        Q = self.query_proj(query_embed_stop).unsqueeze(-1) # shape (mc_samples*batch_size, outerprod_dim, 1)
+        K = self.kv_proj(kv_embed).unsqueeze(-1) # shape (mc_samples*batch_size, outerprod_dim, 1)
+
+        eps, _ = self.attn(Q, K, K) # shape (mc_samples*batch_size, outerprod_dim, n_channels*n_heads)
+        eps = self.attn_output_proj(eps) # shape (mc_samples*batch_size, outerprod_dim, n_channels)
+
+        eps = eps.reshape(-1, self.outerprod_dim * self.n_channels) # shape (mc_samples*batch_size, outerprod_dim*n_channels)
+        eps = self.pre_mlp(eps) # shape (mc_samples*batch_size, outerprod_dim)
+
+        combined = torch.cat([query_embed_stop, eps], dim=-1)
+        residual_out = self.post_mlp(combined) # shape (mc_samples*batch_size, out_dim)
         
-        assert _kv_embed_reshaped.ndim == 2
-        
-        _original_query_for_concat = _query_embed_reshaped
-        _forward_pass = self._core_forward(_query_embed_reshaped, _kv_embed_reshaped, _original_query_for_concat)
-
-        if original_ndim == 3:
-            if self.use_map:
-                _forward_pass = _forward_pass.reshape(S_dim, B_dim, -1)
-            else:
-                mean, scale = _forward_pass
-                mean = mean.reshape(S_dim, B_dim, -1)
-                scale = scale.reshape(S_dim, B_dim, -1)
-                _forward_pass = (mean, scale)
-        return _forward_pass
-
-    def _core_forward(self, query_embed_flat: torch.Tensor, kv_embed_flat: torch.Tensor, original_query_flat: torch.Tensor):
-        _Q_projected = self.query_proj(query_embed_flat)
-        _K_projected = self.kv_proj(kv_embed_flat)
-        Q = _Q_projected.unsqueeze(1)
-        K = _K_projected.unsqueeze(1)
-        V = K
-        attn_output, _ = self.attn(Q, K, V)
-        attn_output = attn_output.squeeze(1)
-        eps = self.pre_mlp(attn_output)
-        combined = torch.cat([original_query_flat, eps], dim=-1)
-        residual_out = self.post_mlp(combined)
-        if self.use_map:
-            out = residual_out
-        else:
-            mean, scale_chunk = torch.chunk(residual_out, 2, dim=-1)
-            out = (mean, scale_chunk)
-        return out
+        if S_dim != -1:
+            residual_out = residual_out.reshape(S_dim, B_dim, -1)
+        return residual_out
